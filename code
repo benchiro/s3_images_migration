@@ -1,0 +1,55 @@
+import boto3
+import psycopg2
+
+def move_images_to_production():
+    # Initializing AWS S3 clients
+    s3_legacy = boto3.client('s3', region_name='us-west-1', aws_access_key_id='OUR_LEGACY_S3_ACCESS_KEY',
+                             aws_secret_access_key='OUR_LEGACY_S3_SECRET_KEY')
+    s3_production = boto3.client('s3', region_name='us-west-1', aws_access_key_id='OUR_PRODUCTION_S3_ACCESS_KEY',
+                                 aws_secret_access_key='OUR_PRODUCTION_S3_SECRET_KEY')
+
+    # Connecting to the production PostgreSQL database
+    conn = psycopg2.connect(
+        host='OUR_PRODUCTION_DB_HOST',
+        database='OUR_PRODUCTION_DB_NAME',
+        user='OUR_PRODUCTION_DB_USER',
+        password='OUR_PRODUCTION_DB_PASSWORD'
+    )
+    cursor = conn.cursor()
+
+    # Fetching all image paths from the database
+    select_query = "SELECT path FROM images_table"
+    cursor.execute(select_query)
+    rows = cursor.fetchall()
+
+    for row in rows:
+        image_path = row[0]
+
+        # Determining if the image is in the legacy or production S3 bucket based on the URL prefix
+        if 'legacy-url' in image_path:
+            # Extracting the image key from the legacy URL
+            image_key = image_path.split('/')[-1]
+
+            try:
+                # Copying the image to the production S3 bucket
+                s3_production.copy_object(Bucket='production-s3', CopySource={'Bucket': 'legacy-s3', 'Key': image_key},
+                                          Key='avatar/' + image_key)
+
+                # Updating the image's path in the database with the new prefix
+                update_query = "UPDATE images_table SET path = %s WHERE path = %s"
+                cursor.execute(update_query, ('avatar/' + image_key, image_path))
+                conn.commit()
+
+            except Exception as e:
+                # Logging the error and continue to the next image
+                print(f"Error occurred while processing image {image_path}: {str(e)}")
+                conn.rollback()
+
+    # Closing the database connection
+    cursor.close()
+    conn.close()
+
+    print("All images have been migrated  to the production S3 bucket and their paths are updated in the database.")
+
+if __name__ == "__main__":
+    move_images_to_production()
